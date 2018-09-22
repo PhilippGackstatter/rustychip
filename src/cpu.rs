@@ -1,5 +1,6 @@
 use self::Opcode::*;
 use rand;
+use std::fmt;
 
 // Memory Map
 // 0x000-0x1FF - Chip 8 interpreter (contains font set in emu)
@@ -8,19 +9,33 @@ use rand;
 
 // 15 1-byte general purpose registers
 // The 16th register is used for the ‘carry flag’
+
 struct Register {
     v: Vec<u8>,
 }
 
 impl Register {
     fn new() -> Register {
-        Register {
-            v: Vec::with_capacity(16),
-        }
+        Register { v: vec![0; 16] }
     }
 }
 
+impl fmt::Display for Register {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "V0: {}\nV1: {}\nV2: {}\nV3: {}\nV4: {}\nV5: {}\nV6: {}\nV7: {}\nV8: {}\nV9: {}\nV10: {}\nV11: {}\nV12: {}\nV13: {}\nV14: {}\nV15: {}\n",
+            self.v[0], self.v[1], self.v[2],self.v[3], self.v[4], self.v[5],
+            self.v[6], self.v[7], self.v[8],self.v[9], self.v[10], self.v[11],
+            self.v[12], self.v[13], self.v[14],self.v[15]
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 enum Opcode {
+    Ignore,
     ClearScreen,
     Return,
     Jump(u16),
@@ -46,13 +61,10 @@ enum Opcode {
     Rand(u16, u16),
     SkipIfKeyPressed(u16),
     SkipIfNotKeyPressed(u16),
-
     GetDelayTimer(u16),
     AwaitKeyPress(u16),
-
     SetDelayTimer(u16),
     SetSoundTimer(u16),
-
     AddToIndexRegister(u16),
     SetIndexRegisterToSpriteLocation(u16),
     StoreBinaryCodedDecimal(u16),
@@ -67,43 +79,59 @@ pub struct CPU {
     // Can have values between 0x000 and 0xFFF
     index_register: u16,
     // Can have values between 0x000 and 0xFFF
+    pub gfx: Vec<u8>,
     program_counter: usize,
-    // 64 x 32 pixel video array, black (0) or white (1)
-    gfx: Vec<u8>,
     register: Register,
     delay_timer: u8,
     sound_timer: u8,
     stack: Vec<u16>,
     stack_pointer: usize,
     keypad: Vec<u8>,
-    drawFlag: bool,
+    draw_flag: bool,
+}
+
+impl fmt::Display for CPU {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "\n{}sp: {}\nI: {}\ndraw: {}", self.register, self.stack_pointer, self.index_register, self.draw_flag
+        );
+        Ok(())
+    }
 }
 
 impl CPU {
     pub fn new() -> CPU {
         let mut cpu = CPU {
-            memory: Vec::with_capacity(4096), // 0xfff + 1 = 0x1000
-            gfx: Vec::with_capacity(64 * 32),
-            keypad: Vec::with_capacity(16),
-            stack: Vec::with_capacity(16),
+            memory: vec![0; 4096], // 0xfff + 1 = 0x1000
+            keypad: vec![0; 16],
+            stack: vec![0; 16],
+            gfx: vec![0; 64 * 32],
             delay_timer: 0,
             sound_timer: 0,
             stack_pointer: 0,
             index_register: 0,
             program_counter: 0x200, // Start execution from this address
-            drawFlag: false,
+            draw_flag: false,
             register: Register::new(),
         };
+        println!("{}", cpu.memory.len());
         // Load the fontset into the first 512 bytes
-        for i in 0..0x200 {
+        for i in 0..FONTSET.len() {
             cpu.memory[i] = FONTSET[i];
         }
         return cpu;
     }
-    pub fn emulate_cycle(&mut self) {
+    pub fn load_rom(&mut self, rom: &Vec<u8>) {
+        for i in 0..rom.len() {
+            self.memory[0x200 + i] = rom[i];
+        }
+    }
+    pub fn emulate_cycle(&mut self) -> bool {
         let opc = self.fetch();
         let decoded_opc = self.decode(opc);
         self.emulate(decoded_opc);
+        return self.draw_flag;
     }
     fn fetch(&self) -> u16 {
         // Fetch 2 bytes to get the 16 bit opcode
@@ -124,6 +152,7 @@ impl CPU {
         // Map the u16 to the actual Opcode
         // https://en.wikipedia.org/wiki/CHIP-8#Virtual_machine_description
         match (nib1, nib2, nib3, nib4) {
+            (0x0, 0x0, 0x0, 0x0) => Ignore, // Can apparently be ignored
             (0x0, 0x0, 0xE, 0xE) => ClearScreen,
             (0x0, 0x0, 0xE, 0x0) => Return,
             (0x1, _, _, _) => Jump(nnn),
@@ -162,7 +191,27 @@ impl CPU {
         }
     }
     fn emulate(&mut self, opcode: Opcode) {
+        // Decrement timers
+        if self.delay_timer > 0 {
+            self.delay_timer -= 1;
+        }
+        if self.sound_timer > 0 {
+            if self.sound_timer == 1 {
+                println!("BEEP!");
+            }
+            self.sound_timer -= 1;
+        }
+
+        // Reset draw_flag
+        self.draw_flag = false;
+
+        if let Ignore = opcode {
+        } else {
+            println!("{:?}", opcode);
+        }
+
         match opcode {
+            Ignore => (),
             ClearScreen => {
                 // Clear Screen
                 self.program_counter += 2;
@@ -186,45 +235,45 @@ impl CPU {
                 self.program_counter += if n1 != nn { 4 } else { 2 };
             }
             SkipIfEqualRegister(x, y) => {
-                let x = x >> 8;
-                let y = y >> 4;
+                // let x = x >> 8;
+                // let y = y >> 4;
                 let registers_are_equal =
                     self.register.v[x as usize] == self.register.v[y as usize];
                 self.program_counter += if registers_are_equal { 4 } else { 2 };
             }
             SetRegister(x, nn) => {
-                let x = x >> 8;
+                // let x = x >> 8;
                 self.register.v[x as usize] = nn as u8;
                 self.program_counter += 2;
             }
             AddAddressToRegister(x, nn) => {
-                let x = x >> 8;
-                self.register.v[x as usize] += nn as u8;
+                // let x = x >> 8;
+                self.register.v[x as usize] = self.register.v[x as usize].wrapping_add(nn as u8);
                 self.program_counter += 2;
             }
             Assign(x, y) => {
-                let x = x >> 8;
-                let y = y >> 4;
+                // let x = x >> 8;
+                // let y = y >> 4;
                 self.register.v[x as usize] = self.register.v[y as usize];
                 self.program_counter += 2;
             }
             AssignOr(x, y) => {
-                let x = x >> 8;
-                let y = y >> 4;
+                // let x = x >> 8;
+                // let y = y >> 4;
                 self.register.v[x as usize] =
                     self.register.v[x as usize] | self.register.v[y as usize];
                 self.program_counter += 2;
             }
             AssignAnd(x, y) => {
-                let x = x >> 8;
-                let y = y >> 4;
+                // let x = x >> 8;
+                // let y = y >> 4;
                 self.register.v[x as usize] =
                     self.register.v[x as usize] & self.register.v[y as usize];
                 self.program_counter += 2;
             }
             AssignXor(x, y) => {
-                let x = x >> 8;
-                let y = y >> 4;
+                // let x = x >> 8;
+                // let y = y >> 4;
                 self.register.v[x as usize] =
                     self.register.v[x as usize] ^ self.register.v[y as usize];
                 self.program_counter += 2;
@@ -248,8 +297,8 @@ impl CPU {
                 self.program_counter += 2;
             }
             Subtract(x, y) => {
-                let x = x >> 8;
-                let y = y >> 4;
+                // let x = x >> 8;
+                // let y = y >> 4;
                 // TODO Unsure about this
                 // VF is set to 0 when there's a borrow, and 1 when there isn't.
                 // When VY is smaller/equal than VX, we can "safely" subtract, without underflowing
@@ -264,17 +313,17 @@ impl CPU {
                 self.register.v[x as usize] = result;
                 self.program_counter += 2;
             }
-            LeastSigStoreAndShift(x, n2) => {
+            LeastSigStoreAndShift(x, _) => {
                 // Stores the least significant bit of VX in VF and then shifts VX to the right by 1
-                let x = x >> 8;
+                // let x = x >> 8;
                 // Mask out everything but the least significant bit
                 self.register.v[0xF] = self.register.v[x as usize] & 0x1;
                 self.register.v[x as usize] >>= 1;
                 self.program_counter += 2;
             }
             SetSubtract(x, y) => {
-                let x = x >> 8;
-                let y = y >> 4;
+                // let x = x >> 8;
+                // let y = y >> 4;
                 // Sets VX to VY minus VX. VF is set to 0 when there's a borrow, and 1 when there isn't.
                 // If it's greater then we underflow
                 if self.register.v[y as usize] < self.register.v[x as usize] {
@@ -289,7 +338,7 @@ impl CPU {
 
                 self.program_counter += 2;
             }
-            MostSigStoreAndShift(x, y) => {
+            MostSigStoreAndShift(x, _) => {
                 // Stores the most significant bit of VX in VF and then shifts VX to the left by 1
                 let most_significant_bit = (self.register.v[x as usize] & 0x80) >> 7;
                 self.register.v[0xf] = most_significant_bit;
@@ -340,7 +389,7 @@ impl CPU {
                     // If so, set VF to 1, otherwise to 0
 
                     // Reset VF to 0
-                    self.register.v[0xf] = 1;
+                    self.register.v[0xf] = 0;
 
                     // xline indicates the position in the line
                     for xline in 0..8 {
@@ -351,8 +400,8 @@ impl CPU {
                         let bit = byte & (0x80 >> xline);
                         // and we know bit 7 is set if the value is not decimal(0)
                         // because then the mask would've eliminated all 1s
+                        let index = (x + xline + (y + yline) * 64) as usize;
                         if bit != 0 {
-                            let index = (x + xline + (y + yline) * 64) as usize;
                             // Only if the pixel is turned off, set VF = 1
                             if self.gfx[index] == 1 {
                                 self.register.v[0xf] = 1;
@@ -360,8 +409,11 @@ impl CPU {
                             // Bit was set, so xor the current value
                             self.gfx[index] ^= 1;
                         }
+                        // print!("{} ", self.gfx[index]);
                     }
+                    // println!();
                 }
+                self.draw_flag = true;
                 self.program_counter += 2;
             }
             SkipIfKeyPressed(x) => {
@@ -413,7 +465,7 @@ impl CPU {
                 self.program_counter += 2;
             }
             SetIndexRegisterToSpriteLocation(x) => {
-                // Sets I to the location of the sprite for the character in VX. 
+                // Sets I to the location of the sprite for the character in VX.
                 // Characters 0-F (in hexadecimal) are represented by a 4x5 font.
                 self.index_register = (self.register.v[x as usize] * 5) as u16;
                 self.program_counter += 2;
@@ -447,19 +499,16 @@ impl CPU {
                 self.program_counter += 2;
             }
             UNKNOWN(n1, n2, n3, n4) => println!("Unkown Instruction {}{}{}{}", n1, n2, n3, n4),
-            _ => {}
         }
     }
 }
 
 // Every group of 5 bytes represent the corresponding character from 0 to F
 // if drawn in binary, row by row
-static FONTSET: [u8; 80] = 
-[0xF0, 0x90, 0x90, 0x90, 0xF0, 0x20, 0x60, 0x20, 0x20, 0x70,
-0xF0, 0x10, 0xF0, 0x80, 0xF0, 0xF0, 0x10, 0xF0, 0x10, 0xF0,
-0x90, 0x90, 0xF0, 0x10, 0x10, 0xF0, 0x80, 0xF0, 0x10, 0xF0,
-0xF0, 0x80, 0xF0, 0x90, 0xF0, 0xF0, 0x10, 0x20, 0x40, 0x40,
-0xF0, 0x90, 0xF0, 0x90, 0xF0, 0xF0, 0x90, 0xF0, 0x10, 0xF0,
-0xF0, 0x90, 0xF0, 0x90, 0x90, 0xE0, 0x90, 0xE0, 0x90, 0xE0,
-0xF0, 0x80, 0x80, 0x80, 0xF0, 0xE0, 0x90, 0x90, 0x90, 0xE0,
-0xF0, 0x80, 0xF0, 0x80, 0xF0, 0xF0, 0x80, 0xF0, 0x80, 0x80];
+static FONTSET: [u8; 80] = [
+    0xF0, 0x90, 0x90, 0x90, 0xF0, 0x20, 0x60, 0x20, 0x20, 0x70, 0xF0, 0x10, 0xF0, 0x80, 0xF0, 0xF0,
+    0x10, 0xF0, 0x10, 0xF0, 0x90, 0x90, 0xF0, 0x10, 0x10, 0xF0, 0x80, 0xF0, 0x10, 0xF0, 0xF0, 0x80,
+    0xF0, 0x90, 0xF0, 0xF0, 0x10, 0x20, 0x40, 0x40, 0xF0, 0x90, 0xF0, 0x90, 0xF0, 0xF0, 0x90, 0xF0,
+    0x10, 0xF0, 0xF0, 0x90, 0xF0, 0x90, 0x90, 0xE0, 0x90, 0xE0, 0x90, 0xE0, 0xF0, 0x80, 0x80, 0x80,
+    0xF0, 0xE0, 0x90, 0x90, 0x90, 0xE0, 0xF0, 0x80, 0xF0, 0x80, 0xF0, 0xF0, 0x80, 0xF0, 0x80, 0x80,
+];

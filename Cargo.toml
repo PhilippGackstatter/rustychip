@@ -1,8 +1,9 @@
 [package]
-name = "chip-8-rust"
+name = "rusty_chip"
 version = "0.1.0"
 authors = ["Morgan <none@gmail.com>"]
 
 [dependencies]
 piston_window = "0.80"
+piston = "*"
 rand = "0.5.5"
