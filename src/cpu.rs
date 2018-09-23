@@ -86,15 +86,22 @@ pub struct CPU {
     sound_timer: u8,
     stack: Vec<u16>,
     stack_pointer: usize,
-    keypad: Vec<u8>,
+    pub keypad: Vec<u8>,
     draw_flag: bool,
+    debug_current_opcode: Opcode,
 }
 
 impl fmt::Display for CPU {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "\n{}sp: {}\nI: {}\ndraw: {}", self.register, self.stack_pointer, self.index_register, self.draw_flag
+            "{:?}\n{:?}\n{}sp: {}\nI: {}\ndraw: {}\n",
+            self.debug_current_opcode,
+            self.keypad,
+            self.register,
+            self.stack_pointer,
+            self.index_register,
+            self.draw_flag
         );
         Ok(())
     }
@@ -114,8 +121,8 @@ impl CPU {
             program_counter: 0x200, // Start execution from this address
             draw_flag: false,
             register: Register::new(),
+            debug_current_opcode: Ignore,
         };
-        println!("{}", cpu.memory.len());
         // Load the fontset into the first 512 bytes
         for i in 0..FONTSET.len() {
             cpu.memory[i] = FONTSET[i];
@@ -197,18 +204,13 @@ impl CPU {
         }
         if self.sound_timer > 0 {
             if self.sound_timer == 1 {
-                println!("BEEP!");
+                // println!("BEEP!");
             }
             self.sound_timer -= 1;
         }
 
         // Reset draw_flag
         self.draw_flag = false;
-
-        if let Ignore = opcode {
-        } else {
-            println!("{:?}", opcode);
-        }
 
         match opcode {
             Ignore => (),
@@ -217,8 +219,11 @@ impl CPU {
                 self.program_counter += 2;
             }
             Return => {
-                self.stack_pointer -= 1;
                 self.program_counter = self.stack[self.stack_pointer] as usize;
+                if self.stack_pointer > 0 {
+                    println!("stackpointer is already 1");
+                    self.stack_pointer -= 1;
+                }
             }
             Jump(nnn) => {
                 self.program_counter = nnn as usize;
@@ -228,52 +233,48 @@ impl CPU {
                 self.stack_pointer += 1;
                 self.program_counter = nnn as usize;
             }
-            SkipIfEqualAddress(n1, nn) => {
-                self.program_counter += if n1 == nn { 4 } else { 2 };
+            SkipIfEqualAddress(x, nn) => {
+                self.program_counter += if self.register.v[x as usize] == nn as u8 {
+                    4
+                } else {
+                    2
+                };
             }
-            SkipIfNotEqualAddress(n1, nn) => {
-                self.program_counter += if n1 != nn { 4 } else { 2 };
+            SkipIfNotEqualAddress(x, nn) => {
+                self.program_counter += if self.register.v[x as usize] != nn as u8 {
+                    4
+                } else {
+                    2
+                };
             }
             SkipIfEqualRegister(x, y) => {
-                // let x = x >> 8;
-                // let y = y >> 4;
                 let registers_are_equal =
                     self.register.v[x as usize] == self.register.v[y as usize];
                 self.program_counter += if registers_are_equal { 4 } else { 2 };
             }
             SetRegister(x, nn) => {
-                // let x = x >> 8;
                 self.register.v[x as usize] = nn as u8;
                 self.program_counter += 2;
             }
             AddAddressToRegister(x, nn) => {
-                // let x = x >> 8;
                 self.register.v[x as usize] = self.register.v[x as usize].wrapping_add(nn as u8);
                 self.program_counter += 2;
             }
             Assign(x, y) => {
-                // let x = x >> 8;
-                // let y = y >> 4;
                 self.register.v[x as usize] = self.register.v[y as usize];
                 self.program_counter += 2;
             }
             AssignOr(x, y) => {
-                // let x = x >> 8;
-                // let y = y >> 4;
                 self.register.v[x as usize] =
                     self.register.v[x as usize] | self.register.v[y as usize];
                 self.program_counter += 2;
             }
             AssignAnd(x, y) => {
-                // let x = x >> 8;
-                // let y = y >> 4;
                 self.register.v[x as usize] =
                     self.register.v[x as usize] & self.register.v[y as usize];
                 self.program_counter += 2;
             }
             AssignXor(x, y) => {
-                // let x = x >> 8;
-                // let y = y >> 4;
                 self.register.v[x as usize] =
                     self.register.v[x as usize] ^ self.register.v[y as usize];
                 self.program_counter += 2;
@@ -281,10 +282,6 @@ impl CPU {
             Add(x, y) => {
                 // Opcode 0x8XY4
                 // Add VY to VX, set carry flag if overflow
-
-                let x = x >> 8; // Convert e.g. 0x0300 to 0x03, so V3
-                let y = y >> 4; // Convert e.g. 0x0050 to 0x05, so V5
-
                 // Set carry flag if the result will be larger than 255
                 if self.register.v[x as usize] > 0xff - self.register.v[y as usize] {
                     self.register.v[0xf] = 1;
@@ -297,8 +294,6 @@ impl CPU {
                 self.program_counter += 2;
             }
             Subtract(x, y) => {
-                // let x = x >> 8;
-                // let y = y >> 4;
                 // TODO Unsure about this
                 // VF is set to 0 when there's a borrow, and 1 when there isn't.
                 // When VY is smaller/equal than VX, we can "safely" subtract, without underflowing
@@ -315,15 +310,12 @@ impl CPU {
             }
             LeastSigStoreAndShift(x, _) => {
                 // Stores the least significant bit of VX in VF and then shifts VX to the right by 1
-                // let x = x >> 8;
                 // Mask out everything but the least significant bit
                 self.register.v[0xF] = self.register.v[x as usize] & 0x1;
                 self.register.v[x as usize] >>= 1;
                 self.program_counter += 2;
             }
             SetSubtract(x, y) => {
-                // let x = x >> 8;
-                // let y = y >> 4;
                 // Sets VX to VY minus VX. VF is set to 0 when there's a borrow, and 1 when there isn't.
                 // If it's greater then we underflow
                 if self.register.v[y as usize] < self.register.v[x as usize] {
@@ -370,15 +362,13 @@ impl CPU {
             Rand(x, nn) => {
                 // Sets VX to the result of a bitwise and operation on a random number (Typically: 0 to 255) and NN.
                 let random: u8 = rand::random();
-                self.register.v[x as usize] = nn as u8 & random;
+                self.register.v[x as usize] = random & self.memory[nn as usize];
                 self.program_counter += 2;
             }
             Display(x, y, n) => {
                 // Coordinates at which the sprite is drawn
-                // let x = pc & 0x0F00;
-                // let y = pc & 0x00F0;
-                // The height of the sprite
-                // let n = pc & 0x000F;
+                let vx = self.register.v[x as usize] as u16;
+                let vy = self.register.v[y as usize] as u16;
 
                 // For every row
                 for yline in 0..n {
@@ -400,7 +390,7 @@ impl CPU {
                         let bit = byte & (0x80 >> xline);
                         // and we know bit 7 is set if the value is not decimal(0)
                         // because then the mask would've eliminated all 1s
-                        let index = (x + xline + (y + yline) * 64) as usize;
+                        let index = (vx + xline + (vy + yline) * 64) as usize;
                         if bit != 0 {
                             // Only if the pixel is turned off, set VF = 1
                             if self.gfx[index] == 1 {
@@ -417,20 +407,18 @@ impl CPU {
                 self.program_counter += 2;
             }
             SkipIfKeyPressed(x) => {
-                // Skips the next instruction if the key stored in VX is pressed. (Usually the next instruction is a jump to skip a code block)
-                self.program_counter += if self.register.v[x as usize] == 1 {
-                    4
-                } else {
-                    2
+                //  Skip next instruction if key with the _value_ of Vx is pressed.
+                if self.keypad[self.register.v[x as usize] as usize] != 0 {
+                    self.program_counter += 2;
                 }
+                self.program_counter += 2;
             }
             SkipIfNotKeyPressed(x) => {
-                // Skips the next instruction if the key stored in VX is pressed. (Usually the next instruction is a jump to skip a code block)
-                self.program_counter += if self.register.v[x as usize] != 1 {
-                    4
-                } else {
-                    2
+                //  Skip next instruction if key with the _value_ of Vx is not pressed.
+                 if self.keypad[self.register.v[x as usize] as usize] == 0 {
+                    self.program_counter += 2;
                 }
+                self.program_counter += 2;
             }
             GetDelayTimer(x) => {
                 // Sets VX to the value of the delay timer.
@@ -498,8 +486,9 @@ impl CPU {
                 }
                 self.program_counter += 2;
             }
-            UNKNOWN(n1, n2, n3, n4) => println!("Unkown Instruction {}{}{}{}", n1, n2, n3, n4),
+            UNKNOWN(n1, n2, n3, n4) => println!("Unkown Instruction {} {} {} {}", n1, n2, n3, n4),
         }
+        self.debug_current_opcode = opcode;
     }
 }
 
